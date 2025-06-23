@@ -1,0 +1,22 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net6.0;net4.8.1</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <Version>1.0.0.0</Version>
+    <FileVersion>1.0.0.0</FileVersion>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <Authors>The Guild</Authors>
+    <Title>SmartLogger</Title>
+    <ProductName>SmartLogger</ProductName>
+    <PackageId>SmartLogger2025</PackageId>
+    <PackageDescription>A duplicate-aware logging library for reducing unnecessary log entries.</PackageDescription>
+    <AppendTargetFrameworkToOutputPath>true</AppendTargetFrameworkToOutputPath>
+    <AppendRuntimeIdentifierToOutputPath>true</AppendRuntimeIdentifierToOutputPath>
+    <OptimizeImplicitlyTriggeredBuild>true</OptimizeImplicitlyTriggeredBuild>
+    <Description>A duplicate-aware logging library for reducing unnecessary log entries.</Description>
+    <RepositoryUrl>https://github.com/GuildOfCalamity/SmartLogger</RepositoryUrl>
+  </PropertyGroup>
+</Project>
