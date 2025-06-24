@@ -1,35 +1,10 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Reflection;
 using System.Threading.Tasks;
-using System.Xml.Linq;
 
-namespace SmartLogger;
-
-/// <summary>
-/// Enumerations for the level of logging.
-/// </summary>
-public enum LogLevel
-{
-    None = 0,
-    Debug = 1 << 0,     // 2^0 (1)
-    Verbose = 1 << 1,   // 2^2 (2)
-    Info = 1 << 2,      // 2^2 (4)
-    Warning = 1 << 3,   // 2^3 (8)
-    Error = 1 << 4,     // 2^4 (16)
-    Success = 1 << 5,   // 2^5 (32)
-    Important = 1 << 6, // 2^6 (64)
-}
-
-internal class LogEntry
-{
-    public string Message { get; set; }
-    public LogLevel Level { get; set; }
-    public DateTime TimeStamp { get; set; }
-}
+namespace Guildsoft;
 
 public interface ISmartLogger
 {
@@ -46,6 +21,15 @@ public interface ISmartLogger
     /// <param name="level">the indicated <see cref="LogLevel"/></param>
     /// <remarks>If <see cref="LogLevel.None"/> then file write is skipped and output will be to console only.</remarks>
     void Write(string message, LogLevel level = LogLevel.Info);
+
+    /// <summary>
+    /// Deferred file writing on another thread - this method will wait for the file to become available before writing.
+    /// </summary>
+    /// <param name="message">the string to log</param>
+    /// <param name="level">the indicated <see cref="LogLevel"/></param>
+    /// <param name="retries">the number of times to try and write, if the file is locked</param>
+    /// <remarks>The order of writes is not guaranteed, as this is threaded and may experience other re-entry operations.</remarks>
+    void WriteDeferred(string message, LogLevel level = LogLevel.Info, int retries = 100);
 
     /// <summary>
     /// Asynchronously writes a log entry to the log file.
@@ -116,23 +100,42 @@ public class SmartLogger : ISmartLogger, IDisposable
         }
         else
         {
-            _logFilePath = logFilePath;
+            _logFilePath = RemoveInvalidCharacters(logFilePath);
         }
         _timeFormat = string.IsNullOrEmpty(logFilePath) ? "yyyy-MM-dd hh:mm:ss.fff tt" : timeFormat;
         _maxHistory = maxHistory;
         _timeWindow = staleTime ?? TimeSpan.FromMinutes(30);
     }
+    
+    ~SmartLogger() => Dispose(false);
 
+    #region [Public Methods]
+    /// <inheritdoc cref="ISmartLogger.Write(string, LogLevel)"/>
     public void Write(string message, LogLevel level = LogLevel.Info)
     {
         WriteInternalAsync(message, level, sync: true).GetAwaiter().GetResult();
     }
 
+    /// <inheritdoc cref="ISmartLogger.WriteAsync(string, LogLevel)"/>
     public async Task WriteAsync(string message, LogLevel level = LogLevel.Info)
     {
         await WriteInternalAsync(message, level, sync: false).ConfigureAwait(false);
     }
 
+    /// <inheritdoc cref="ISmartLogger.WriteDeferred(string, LogLevel, int)"/>
+    public void WriteDeferred(string message, LogLevel level = LogLevel.Info, int retries = 100)
+    {
+        Task.Run(async () =>
+        {
+            while (IsFileLocked(new FileInfo(_logFilePath)) && --retries > 0)
+            {   // Wait for the file to be available
+                await Task.Delay(10).ConfigureAwait(false);
+            }
+            await WriteInternalAsync(message, level, sync: false).ConfigureAwait(false);
+        });
+    }
+
+    /// <inheritdoc cref="ISmartLogger.ClearHistory"/>
     public void ClearHistory()
     {
         lock (_lockObj)
@@ -141,6 +144,7 @@ public class SmartLogger : ISmartLogger, IDisposable
         }
     }
 
+    /// <inheritdoc cref="ISmartLogger.GetLogPath"/>
     public string GetLogPath()
     {
         if (_usingStartDate)
@@ -153,11 +157,12 @@ public class SmartLogger : ISmartLogger, IDisposable
         }
     }
 
+    /// <inheritdoc cref="ISmartLogger.GetLogName"/>
     public string GetLogName()
     {
         if (_usingStartDate)
         {
-            return Path.Combine(GetLogPath(), $@"{Path.GetFileNameWithoutExtension(Assembly.GetEntryAssembly()?.Location)}_{DateTime.Now.ToString("dd")}.log");
+            return Path.Combine(GetLogPath(), $@"{Path.GetFileNameWithoutExtension(System.Reflection.Assembly.GetEntryAssembly()?.Location)}_{DateTime.Now.ToString("dd")}.log");
         }
         else
         {
@@ -166,6 +171,16 @@ public class SmartLogger : ISmartLogger, IDisposable
         }
     }
 
+    /// <inheritdoc cref="ISmartLogger.Dispose"/>
+    public void Dispose()
+    {
+        // Keep cleanup code in 'Dispose(bool disposing)' method
+        Dispose(true);
+        GC.SuppressFinalize(this);
+    }
+    #endregion
+
+    #region [Private Methods]
     async Task WriteInternalAsync(string message, LogLevel level, bool sync)
     {
         bool shouldLog = false;
@@ -262,15 +277,53 @@ public class SmartLogger : ISmartLogger, IDisposable
             // On error, we'll attempt to determine the caller and use that as the log file's name.
             try
             {
-                result = Path.Combine(Directory.GetCurrentDirectory(), $"{Path.GetFileNameWithoutExtension(Assembly.GetEntryAssembly()?.Location)}.log");
+                result = Path.Combine(Directory.GetCurrentDirectory(), $"{Path.GetFileNameWithoutExtension(System.Reflection.Assembly.GetEntryAssembly()?.Location)}.log");
             }
             catch (Exception)
             {
-                result = Path.Combine(Directory.GetCurrentDirectory(), $"{Path.GetFileNameWithoutExtension(Assembly.GetExecutingAssembly()?.Location)}.log");
+                result = Path.Combine(Directory.GetCurrentDirectory(), $"{Path.GetFileNameWithoutExtension(System.Reflection.Assembly.GetExecutingAssembly()?.Location)}.log");
             }
         }
         return result;
     }
+
+    /// <summary>
+    /// Determines if a file is being accessed by another thread.
+    /// </summary>
+    /// <param name="file"><see cref="FileInfo"/></param>
+    /// <returns>true if file is in use, false otherwise</returns>
+    bool IsFileLocked(FileInfo file)
+    {
+        FileStream? stream = null;
+        try
+        {
+            if (!File.Exists(file.FullName))
+                return false;
+
+            stream = file.Open(FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        }
+        catch (IOException) // still being written to or being accessed by another process 
+        {
+            return true;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+        finally
+        {
+            if (stream != null)
+            {
+                stream.Close();
+                stream = null;
+            }
+        }
+        return false;
+    }
+
+    string RemoveInvalidCharacters(string path) => System.IO.Path.GetInvalidFileNameChars().Aggregate(path, (current, c) => current.Replace(c.ToString(), string.Empty));
+    
+    bool HasInvalidChars(string path) => (!string.IsNullOrEmpty(path) && path.IndexOfAny(System.IO.Path.GetInvalidPathChars()) >= 0);
 
     protected virtual void Dispose(bool disposing)
     {
@@ -282,13 +335,27 @@ public class SmartLogger : ISmartLogger, IDisposable
             _disposed = true;
         }
     }
+    #endregion
+}
 
-    public void Dispose()
-    {
-        // Keep cleanup code in 'Dispose(bool disposing)' method
-        Dispose(true);
-        GC.SuppressFinalize(this);
-    }
-    
-    ~SmartLogger() => Dispose(false);
+/// <summary>
+/// Enumerations for the level of logging.
+/// </summary>
+public enum LogLevel
+{
+    None = 0,
+    Debug = 1 << 0,     // 2^0 (1)
+    Verbose = 1 << 1,   // 2^2 (2)
+    Info = 1 << 2,      // 2^2 (4)
+    Warning = 1 << 3,   // 2^3 (8)
+    Error = 1 << 4,     // 2^4 (16)
+    Success = 1 << 5,   // 2^5 (32)
+    Important = 1 << 6, // 2^6 (64)
+}
+
+internal class LogEntry
+{
+    public string Message { get; set; }
+    public LogLevel Level { get; set; }
+    public DateTime TimeStamp { get; set; }
 }

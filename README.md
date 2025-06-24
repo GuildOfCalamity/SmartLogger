@@ -2,7 +2,7 @@
 
 ![Icon](./AppIcon.png)
 
-## 📝 v1.0.0.0 - June 2025
+## 📝 v1.0.0.1 - June 2025
 
 **Dependencies**
 
@@ -42,6 +42,15 @@
    Task WriteAsync(string message, LogLevel level = LogLevel.Info);
 
    /// <summary>
+   /// Deferred file writing on another thread - this method will wait for the file to become available before writing.
+   /// </summary>
+   /// <param name="message">the string to log</param>
+   /// <param name="level">the indicated <see cref="LogLevel"/></param>
+   /// <param name="retries">the number of times to try and write, if the file is locked</param>
+   /// <remarks>The order of writes is not guaranteed, as this is threaded and may experience other re-entry operations.</remarks>
+   void WriteDeferred(string message, LogLevel level = LogLevel.Info, int retries = 100);
+
+   /// <summary>
    /// Returns the current logging path.
    /// </summary>
    string GetLogPath();
@@ -66,29 +75,44 @@
 
     /** Samples **/
 
-        Console.WriteLine("✔️ Creating SmartLogger (with memory of 10 seconds) …");
+    Console.WriteLine("✔️ Creating SmartLogger (with memory of 10 seconds) …");
 
-        ISmartLogger? _logger = new SmartLogger("", "hh:mm:ss.fff tt", 10, TimeSpan.FromSeconds(10));
+    // Configure the logger with no file name, allowing it to generate a path and name based on the current date/time.
+    ISmartLogger? _logger = new SmartLogger("", "hh:mm:ss.fff tt", 10, TimeSpan.FromSeconds(10));
 
-        _logger.WriteFailure += (msg, ex) =>
-        {
-            Console.WriteLine($"🚨 Failed during write '{msg}'");
-            Console.WriteLine($"🚨 Exception message: {ex.Message}");
-        };
+    #region [Event Handler]
+    _logger.WriteFailure += (msg, ex) =>
+    {
+        Console.WriteLine($"🚨 Failed during write '{msg}'");
+        Console.WriteLine($"🚨 Exception message: {ex.Message}");
+    };
+    #endregion
 
-        await _logger.WriteAsync($"Starting duplicate write tests…");
-        for (int i = 1; i < 51; i++)
-        {
-            Console.WriteLine($"🔔 Writing duplicate message #{i}");
-            await _logger.WriteAsync($"This is a test message for duplicate checking.");
-            await Task.Delay(250);
-        }
-        _logger.Write($"Logging test complete.");
+    #region [Asynchronous Write Test]
+    _logger.Write($"Starting duplicate write test…");
+    for (int i = 1; i < 51; i++)
+    {
+        await Task.Delay(250); // Simulate some delay
+        Console.WriteLine($"🔔 Writing duplicate message #{i}");
+        await _logger.WriteAsync($"This is a test message for duplicate checking.");
+    }
+    #endregion
 
-        Console.WriteLine($"✔️ Log found here ⇨ {_logger.GetLogName()}");
-        Console.WriteLine($"✔️ You should see two \"test message\" entries only, based on the TimeSpan setting of this demo.");
+    #region [Deferred Write Test]
+    _logger.WriteDeferred($"Starting deferred write test…");
+    for (int i = 1; i < 51; i++)
+    {
+        Thread.Sleep(250); // Simulate some delay
+        Console.WriteLine($"🔔 Writing deferred message #{i}");
+        _logger.WriteDeferred($"This is a test message for deferred writing.");
+    }
+    #endregion
 
-        _logger?.Dispose();
+    _logger.Write($"Logging tests completed.");
+
+    Console.WriteLine($"✔️ Log found here ⇨ {_logger.GetLogName()}");
+
+    _logger?.Dispose();
 
 ```
 
